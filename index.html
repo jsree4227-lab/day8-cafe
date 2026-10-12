@@ -56,8 +56,19 @@
   main { flex: 1; min-width: 0; position: relative; }
   iframe { width: 100%; height: 100%; border: 0; display: none; background: var(--bg); }
   #home { padding: 32px; }
-  #home h2 { margin: 0 0 8px; }
-  #home p { color: var(--muted); margin: 0; }
+  #home { overflow-y: auto; height: 100%; }
+  #home h2 { margin: 0 0 16px; }
+  #home p { color: var(--muted); margin: 12px 0 0; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 6px; }
+  .stat span { font-size: 13px; color: var(--muted); }
+  .stat b { font-size: 24px; }
+  .stat small { font-size: 12px; color: var(--muted); }
+  .chart { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  .chart h3 { margin: 0 0 8px; font-size: 16px; }
+  .chart svg { width: 100%; height: auto; display: block; }
+  .chart text { font-family: var(--font); fill: var(--muted); font-size: 12px; }
+  .chart text.val { fill: var(--text); }
   #soon { display: none; padding: 32px; color: var(--muted); font-size: 18px; }
   main.showing-frame iframe { display: block; }
   main.showing-frame #home,
@@ -85,7 +96,17 @@
   <main id="main">
     <section id="home">
       <h2>오늘의 가게</h2>
-      <p>숫자 카드와 7일 매출 그래프가 여기에 들어옵니다. (3단계)</p>
+      <div class="cards">
+        <div class="stat"><span>오늘 매출</span><b id="sToday">-</b></div>
+        <div class="stat"><span>오늘 판매 수량</span><b id="sQty">-</b></div>
+        <div class="stat"><span>최근 7일 매출</span><b id="sWeek">-</b></div>
+        <div class="stat"><span>재고 부족 메뉴</span><b id="sLow">-</b><small>10개 이하</small></div>
+      </div>
+      <div class="chart">
+        <h3>최근 7일 매출</h3>
+        <svg id="chart" viewBox="0 0 560 240" role="img" aria-label="최근 7일 매출 막대그래프"></svg>
+      </div>
+      <p id="homeMsg"></p>
     </section>
     <section id="soon">🚧 준비중입니다.</section>
     <iframe id="frame" title="내용 화면"></iframe>
@@ -109,6 +130,7 @@
     });
     if (page === "home") {
       show("home");
+      loadHome();
       return;
     }
     // 페이지 파일이 있으면 가운데에 열고, 없으면 "준비중"을 보여준다
@@ -124,6 +146,95 @@
   buttons.forEach(function (b) {
     b.addEventListener("click", function () { go(b.dataset.page); });
   });
+
+  /* ---- 홈: 숫자 카드 + 7일 매출 그래프 ---- */
+  var SUPABASE_URL = "https://otkvzjcryqwecxurbipc.supabase.co";
+  var SUPABASE_KEY = "sb_publishable_hL_cwznlEzYNytYwXRlKnA_PHxyGp3d";
+  var LOW_STOCK = 10;
+  var NS = "http://www.w3.org/2000/svg";
+
+  function api(path) {
+    return fetch(SUPABASE_URL + "/rest/v1/" + path, {
+      headers: { apikey: SUPABASE_KEY, Authorization: "Bearer " + SUPABASE_KEY }
+    }).then(function (r) {
+      if (!r.ok) return r.text().then(function (t) { throw new Error(t || r.status); });
+      return r.json();
+    });
+  }
+
+  function won(n) { return Number(n).toLocaleString("ko-KR") + "원"; }
+
+  function dayKey(d) {
+    return d.getFullYear() + "-" + (d.getMonth() + 1) + "-" + d.getDate();
+  }
+
+  function svgEl(name, attrs, text) {
+    var el = document.createElementNS(NS, name);
+    Object.keys(attrs).forEach(function (k) { el.setAttribute(k, attrs[k]); });
+    if (text !== undefined) el.textContent = text;
+    return el;
+  }
+
+  function drawChart(days) {
+    var svg = document.getElementById("chart");
+    svg.textContent = "";
+    var W = 560, H = 240, padTop = 28, padBottom = 30, padX = 16;
+    var max = Math.max.apply(null, days.map(function (d) { return d.total; }));
+    var slot = (W - padX * 2) / days.length;
+    var barW = slot * 0.55;
+    var plotH = H - padTop - padBottom;
+    svg.appendChild(svgEl("line", { x1: padX, x2: W - padX, y1: H - padBottom, y2: H - padBottom, stroke: "#e8dfd3" }));
+    days.forEach(function (d, i) {
+      var h = max > 0 ? Math.round((d.total / max) * plotH) : 0;
+      var x = padX + slot * i + (slot - barW) / 2;
+      var y = H - padBottom - h;
+      svg.appendChild(svgEl("rect", {
+        x: x, y: y, width: barW, height: h, rx: 4,
+        fill: d.today ? "#c8783c" : "#e0b995"
+      }));
+      svg.appendChild(svgEl("text", { x: x + barW / 2, y: y - 6, "text-anchor": "middle", "class": "val" },
+        d.total > 0 ? d.total.toLocaleString("ko-KR") : "0"));
+      svg.appendChild(svgEl("text", { x: x + barW / 2, y: H - 10, "text-anchor": "middle" }, d.label));
+    });
+  }
+
+  function loadHome() {
+    var now = new Date();
+    var todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    var from = new Date(todayStart);
+    from.setDate(from.getDate() - 6);
+
+    var days = [];
+    for (var i = 0; i < 7; i++) {
+      var d = new Date(from);
+      d.setDate(from.getDate() + i);
+      days.push({ key: dayKey(d), label: (d.getMonth() + 1) + "/" + d.getDate(), total: 0, qty: 0, today: i === 6 });
+    }
+
+    Promise.all([
+      api("sales?select=qty,total,sold_at&sold_at=gte." + encodeURIComponent(from.toISOString()) + "&limit=10000"),
+      api("menu_items?select=stock&stock=lte." + LOW_STOCK)
+    ]).then(function (res) {
+      var byKey = {};
+      days.forEach(function (d) { byKey[d.key] = d; });
+      res[0].forEach(function (s) {
+        var d = byKey[dayKey(new Date(s.sold_at))];
+        if (d) { d.total += s.total; d.qty += s.qty; }
+      });
+      var week = days.reduce(function (a, d) { return a + d.total; }, 0);
+      var today = days[6];
+      document.getElementById("sToday").textContent = won(today.total);
+      document.getElementById("sQty").textContent = today.qty + "개";
+      document.getElementById("sWeek").textContent = won(week);
+      document.getElementById("sLow").textContent = res[1].length + "개";
+      document.getElementById("homeMsg").textContent = "";
+      drawChart(days);
+    }).catch(function (err) {
+      document.getElementById("homeMsg").textContent = "데이터를 불러오지 못했어요: " + err.message;
+    });
+  }
+
+  loadHome();
 </script>
 </body>
 </html>
