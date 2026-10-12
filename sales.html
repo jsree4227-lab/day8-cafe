@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>매출</title>
+<style>
+  :root {
+    --bg: #faf6f0;
+    --panel: #ffffff;
+    --side: #3b2a20;
+    --accent: #c8783c;
+    --text: #2d211a;
+    --muted: #8a7a6d;
+    --line: #e8dfd3;
+    --ok: #3f7d4e;
+    --bad: #b3402f;
+    --font: "Pretendard", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px; font-family: var(--font); background: var(--bg); color: var(--text); }
+  h2 { margin: 0 0 16px; }
+  h3 { margin: 0 0 12px; font-size: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; margin-bottom: 20px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+  label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+  select, input { font-family: inherit; font-size: 15px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--text); }
+  input[type=number] { width: 90px; }
+  button { font-family: inherit; font-size: 15px; padding: 11px 20px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .sum { font-size: 15px; padding-bottom: 10px; }
+  .sum b { font-size: 18px; }
+  #msg { margin-top: 12px; font-size: 14px; min-height: 20px; }
+  #msg.ok { color: var(--ok); }
+  #msg.bad { color: var(--bad); }
+  .today { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px; }
+  .today b { font-size: 22px; color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 10px 6px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: normal; }
+  td.num, th.num { text-align: right; }
+  .empty { color: var(--muted); padding: 12px 0; }
+</style>
+</head>
+<body>
+  <h2>매출</h2>
+
+  <section class="card">
+    <h3>판매 입력</h3>
+    <form id="form" class="row">
+      <label>메뉴
+        <select id="menu" required></select>
+      </label>
+      <label>수량
+        <input id="qty" type="number" min="1" step="1" value="1" required>
+      </label>
+      <div class="sum">합계 <b id="total">0원</b></div>
+      <button id="submit" type="submit" disabled>판매 기록</button>
+    </form>
+    <div id="msg"></div>
+  </section>
+
+  <section class="card">
+    <div class="today"><h3>오늘 판매</h3><div>오늘 매출 <b id="todayTotal">0원</b></div></div>
+    <table>
+      <thead><tr><th>시간</th><th>메뉴</th><th class="num">수량</th><th class="num">금액</th></tr></thead>
+      <tbody id="list"></tbody>
+    </table>
+    <div id="empty" class="empty" hidden>아직 오늘 판매 기록이 없어요.</div>
+  </section>
+
+<script>
+  var SUPABASE_URL = "https://otkvzjcryqwecxurbipc.supabase.co";
+  var SUPABASE_KEY = "sb_publishable_hL_cwznlEzYNytYwXRlKnA_PHxyGp3d";
+
+  var $ = function (id) { return document.getElementById(id); };
+  var items = [];
+
+  function api(path, options) {
+    options = options || {};
+    options.headers = Object.assign({
+      apikey: SUPABASE_KEY,
+      Authorization: "Bearer " + SUPABASE_KEY,
+      "Content-Type": "application/json"
+    }, options.headers || {});
+    return fetch(SUPABASE_URL + "/rest/v1/" + path, options).then(function (r) {
+      if (!r.ok) {
+        return r.text().then(function (t) { throw new Error(t || r.status); });
+      }
+      return r.text().then(function (t) { return t ? JSON.parse(t) : null; });
+    });
+  }
+
+  function won(n) { return Number(n).toLocaleString("ko-KR") + "원"; }
+
+  function message(text, kind) {
+    $("msg").textContent = text;
+    $("msg").className = kind || "";
+  }
+
+  function current() {
+    var id = Number($("menu").value);
+    return items.find(function (m) { return m.id === id; });
+  }
+
+  function updateTotal() {
+    var m = current();
+    var q = Number($("qty").value);
+    $("total").textContent = m && q > 0 ? won(m.price * q) : "0원";
+  }
+
+  function loadMenu() {
+    return api("menu_items?select=id,name,price&order=id").then(function (rows) {
+      items = rows;
+      var sel = $("menu");
+      sel.textContent = "";
+      rows.forEach(function (m) {
+        var o = document.createElement("option");
+        o.value = m.id;
+        o.textContent = m.name + " (" + won(m.price) + ")";
+        sel.appendChild(o);
+      });
+      $("submit").disabled = rows.length === 0;
+      if (rows.length === 0) message("등록된 메뉴가 없어요. 먼저 메뉴를 등록해 주세요.", "bad");
+      updateTotal();
+    });
+  }
+
+  function loadToday() {
+    var start = new Date();
+    start.setHours(0, 0, 0, 0);
+    var q = "sales?select=id,menu_name,qty,total,sold_at&sold_at=gte." +
+      encodeURIComponent(start.toISOString()) + "&order=sold_at.desc";
+    return api(q).then(function (rows) {
+      var body = $("list");
+      body.textContent = "";
+      var sum = 0;
+      rows.forEach(function (s) {
+        sum += s.total;
+        var tr = document.createElement("tr");
+        var t = new Date(s.sold_at).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
+        [t, s.menu_name, s.qty, won(s.total)].forEach(function (v, i) {
+          var td = document.createElement("td");
+          if (i >= 2) td.className = "num";
+          td.textContent = v;
+          tr.appendChild(td);
+        });
+        body.appendChild(tr);
+      });
+      $("todayTotal").textContent = won(sum);
+      $("empty").hidden = rows.length > 0;
+    });
+  }
+
+  $("menu").addEventListener("change", updateTotal);
+  $("qty").addEventListener("input", updateTotal);
+
+  $("form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var m = current();
+    var q = Math.floor(Number($("qty").value));
+    if (!m || !(q > 0)) { message("메뉴와 수량을 확인해 주세요.", "bad"); return; }
+    $("submit").disabled = true;
+    message("저장 중...");
+    api("sales", {
+      method: "POST",
+      headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({
+        menu_item_id: m.id,
+        menu_name: m.name,
+        unit_price: m.price,
+        qty: q,
+        total: m.price * q
+      })
+    }).then(function () {
+      message(m.name + " " + q + "개 (" + won(m.price * q) + ") 기록했어요.", "ok");
+      $("qty").value = 1;
+      updateTotal();
+      return loadToday();
+    }).catch(function (err) {
+      message("저장하지 못했어요: " + err.message, "bad");
+    }).then(function () {
+      $("submit").disabled = items.length === 0;
+    });
+  });
+
+  loadMenu().then(loadToday).catch(function (err) {
+    message("데이터를 불러오지 못했어요: " + err.message, "bad");
+  });
+</script>
+</body>
+</html>
